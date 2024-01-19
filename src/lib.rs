@@ -39,7 +39,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let expanded = quote! {
-        impl IntoResponse for #impl_generics #name #type_generics #where_clause {
+        impl axum::response::IntoResponse for #impl_generics #name #type_generics #where_clause {
             #impl_expr
         }
     };
@@ -52,26 +52,36 @@ fn derive_enum(data: DataEnum, impl_expr: &mut TokenStream2) {
 
     for variant in data.variants {
         let variant_name = &variant.ident;
-
+        let mut propagate = false;
         let fields = match variant.fields {
             Fields::Unit => quote_spanned!( variant.span()=> ),
+            Fields::Unnamed(ref fields) if fields.unnamed.len() == 1 => {
+                propagate = true;
+
+                quote_spanned!( variant.span()=> (error))
+            }
             Fields::Unnamed(_) => quote_spanned!( variant.span()=> (..)),
             Fields::Named(_) => quote_spanned!( variant.span()=> {..}),
         };
 
         let attributes = Attributes::from_variant(&variant).unwrap_or_default();
 
-        let response = match (attributes.status_code, attributes.error_code) {
-            (None, None) => quote_spanned!( variant.span()=> "-1".into_response()),
-            (None, Some(error_code)) => {
-                quote_spanned!( variant.span()=> #error_code.into_response())
+        // This is ugly but I'm too lazy to do it properly.
+        let response = if !propagate {
+            match (attributes.status_code, attributes.error_code) {
+                (None, None) => quote_spanned!( variant.span()=> "-1".into_response()),
+                (None, Some(error_code)) => {
+                    quote_spanned!( variant.span()=> #error_code.into_response())
+                }
+                (Some(status_code), None) => {
+                    quote_spanned!( variant.span()=> axum::http::StatusCode::from_u16(#status_code).expect("invalid status_code").into_response())
+                }
+                (Some(status_code), Some(error_code)) => {
+                    quote_spanned!( variant.span()=> (axum::http::StatusCode::from_u16(#status_code).expect("invalid status_code"), #error_code).into_response())
+                }
             }
-            (Some(status_code), None) => {
-                quote_spanned!( variant.span()=> axum::http::StatusCode::from_u16(#status_code).expect("invalid status_code").into_response())
-            }
-            (Some(status_code), Some(error_code)) => {
-                quote_spanned!( variant.span()=> (axum::http::StatusCode::from_u16(#status_code).expect("invalid status_code"), #error_code).into_response())
-            }
+        } else {
+            quote_spanned!( variant.span()=> error.into_response())
         };
 
         match_expr.extend(quote_spanned! { variant.span()=>
