@@ -11,6 +11,7 @@ use syn::{parse_macro_input, spanned::Spanned as _, Data, DataEnum, DeriveInput,
 struct Attributes {
     status_code: Option<u16>,
     error_code: Option<String>,
+    transparent: bool,
 }
 
 #[proc_macro_derive(ResponseError, attributes(response))]
@@ -52,22 +53,19 @@ fn derive_enum(data: DataEnum, impl_expr: &mut TokenStream2) {
 
     for variant in data.variants {
         let variant_name = &variant.ident;
-        let mut propagate = false;
+
+        let attributes = Attributes::from_variant(&variant).unwrap_or_default();
         let fields = match variant.fields {
             Fields::Unit => quote_spanned!( variant.span()=> ),
-            Fields::Unnamed(ref fields) if fields.unnamed.len() == 1 => {
-                propagate = true;
-
+            Fields::Unnamed(ref fields) if fields.unnamed.len() == 1 && attributes.transparent => {
                 quote_spanned!( variant.span()=> (error))
             }
             Fields::Unnamed(_) => quote_spanned!( variant.span()=> (..)),
             Fields::Named(_) => quote_spanned!( variant.span()=> {..}),
         };
 
-        let attributes = Attributes::from_variant(&variant).unwrap_or_default();
-
         // This is ugly but I'm too lazy to do it properly.
-        let response = if !propagate {
+        let response = if !attributes.transparent {
             match (attributes.status_code, attributes.error_code) {
                 (None, None) => quote_spanned!( variant.span()=> "-1".into_response()),
                 (None, Some(error_code)) => {
